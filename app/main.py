@@ -23,6 +23,7 @@ async def main() -> None:
     repository = Repository(database, settings)
     instagram = InstagramClient(settings)
     publisher = Publisher(settings, repository, instagram, metrics)
+    await publisher.cleanup_stale_video_processing_files()
     scheduler = Scheduler(settings, repository, publisher, metrics)
 
     loop = asyncio.get_running_loop()

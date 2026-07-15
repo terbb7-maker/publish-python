@@ -1,6 +1,7 @@
 import json
 from dataclasses import dataclass
 from typing import Any
+from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 
 import httpx
 
@@ -10,6 +11,16 @@ from app.logger import get_logger
 
 READY_STATUSES = {"FINISHED", "PUBLISHED", "READY"}
 FAILED_STATUSES = {"ERROR", "EXPIRED", "FAILED"}
+SENSITIVE_KEYS = {
+    "access_token",
+    "app_secret",
+    "authorization",
+    "client_secret",
+    "code",
+    "code_verifier",
+    "refresh_token",
+    "token",
+}
 
 
 @dataclass(slots=True)
@@ -103,10 +114,19 @@ class InstagramClient:
         params: dict[str, Any] | None = None,
         data: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
+        url = f"{self._base_url}{path}"
+        self._logger.info(
+            "instagram_http_request_started",
+            method=method,
+            url=sanitize_url(url),
+            path=path,
+            params=sanitize_mapping(params),
+            body=sanitize_mapping(data),
+        )
         try:
             response = await self._client.request(
                 method,
-                f"{self._base_url}{path}",
+                url,
                 params=params,
                 data=data,
             )
@@ -132,6 +152,15 @@ class InstagramClient:
         if response.is_error or payload.get("error"):
             self._log_meta_raw_response(method, path, response, payload)
             raise map_instagram_error(response.status_code, payload)
+        self._logger.info(
+            "instagram_http_response_succeeded",
+            method=method,
+            path=path,
+            url=sanitize_url(str(response.url)),
+            http_status=response.status_code,
+            headers=relevant_response_headers(response.headers),
+            payload=sanitize_mapping(payload),
+        )
         return payload
 
     def _log_meta_raw_response(
@@ -141,20 +170,21 @@ class InstagramClient:
         response: httpx.Response,
         payload: dict[str, Any],
     ) -> None:
+        payload_safe = sanitize_mapping(payload)
         raw_response_block = (
             "================ META RAW RESPONSE ================\n"
             f"HTTP STATUS: {response.status_code}\n"
-            f"{json.dumps(payload, ensure_ascii=False, default=str, indent=2)}\n"
+            f"{json.dumps(payload_safe, ensure_ascii=False, default=str, indent=2)}\n"
             "=================================================="
         )
         self._logger.error(
             "meta_raw_response",
             method=method,
             path=path,
-            url=str(response.url),
+            url=sanitize_url(str(response.url)),
             http_status=response.status_code,
             headers=relevant_response_headers(response.headers),
-            payload=payload,
+            payload=payload_safe,
             raw_response_block=raw_response_block,
         )
 
@@ -178,6 +208,28 @@ def relevant_response_headers(headers: httpx.Headers) -> dict[str, str]:
         "x-page-usage",
     }
     return {key: value for key, value in headers.items() if key.lower() in relevant_names}
+
+
+def sanitize_mapping(value: Any) -> Any:
+    if isinstance(value, list):
+        return [sanitize_mapping(item) for item in value]
+    if isinstance(value, dict):
+        return {
+            key: "[redacted]" if key.lower() in SENSITIVE_KEYS else sanitize_mapping(item)
+            for key, item in value.items()
+        }
+    return value
+
+
+def sanitize_url(value: str) -> str:
+    parsed = urlsplit(value)
+    query = urlencode(
+        [
+            (key, "[redacted]" if key.lower() in SENSITIVE_KEYS else item)
+            for key, item in parse_qsl(parsed.query, keep_blank_values=True)
+        ]
+    )
+    return urlunsplit((parsed.scheme, parsed.netloc, parsed.path, query, parsed.fragment))
 
 
 def map_instagram_error(status: int, payload: dict[str, Any]) -> InstagramError:

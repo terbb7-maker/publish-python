@@ -11,6 +11,7 @@ from app.instagram import FAILED_STATUSES, READY_STATUSES, InstagramClient, Inst
 from app.logger import get_logger
 from app.metrics import Metrics, Timer
 from app.repository import JobContext, Repository
+from app.video_processor import ProcessedVideo, VideoProcessor
 
 
 class Publisher:
@@ -26,6 +27,10 @@ class Publisher:
         self._instagram = instagram
         self._metrics = metrics
         self._logger = get_logger("publisher")
+        self._video_processor = VideoProcessor(settings, metrics)
+
+    async def cleanup_stale_video_processing_files(self) -> None:
+        await self._video_processor.cleanup_stale_files()
 
     async def publish(self, job_id: str) -> None:
         timer = Timer()
@@ -125,139 +130,274 @@ class Publisher:
         )
 
         signed_url = await self._repository.signed_media_url(job)
+        media_url = signed_url
+        processed_video: ProcessedVideo | None = None
+        temporary_storage_path: str | None = None
+        temporary_processing_uuid: str | None = None
 
-        container_id = job.provider_container_id
-        if not container_id:
-            container_timer = Timer()
-            self._logger.info(
-                "container_create_started",
-                job_id=job.id,
-                campaign_id=job.campaign_id,
-                meta_app_id=job.meta_app_id,
-                instagram_user_id=job.instagram_user_id,
-                media_type=job.campaign_type,
-                mime_type=job.mime_type,
-                media_url="[redacted]",
-            )
-            try:
-                container_id = await self._instagram.create_container(
-                    token,
-                    job.instagram_user_id,
+        try:
+            container_id = job.provider_container_id
+            if not container_id:
+                processed_video = await self._video_processor.process(
                     signed_url,
                     job.mime_type,
-                    job.campaign_type,
-                    job.caption,
+                    job.id,
                 )
-            except InstagramError as error:
-                self._log_instagram_stage_error(
-                    "container_create_failed",
-                    job,
-                    error,
-                    container_timer,
+                if self._settings.video_processing_dry_run:
+                    await self._repository.mark_completed(
+                        job.id,
+                        (
+                            f"video-processing-dry-run-{processed_video.processing_uuid}"
+                            if processed_video
+                            else f"video-processing-dry-run-fallback-{job.id}"
+                        ),
+                        {
+                            "provider_status": (
+                                "video_processing_dry_run"
+                                if processed_video
+                                else "video_processing_dry_run_fallback"
+                            ),
+                            "processing_uuid": processed_video.processing_uuid if processed_video else None,
+                            "random_seed": processed_video.random_seed if processed_video else None,
+                            "original_sha256": processed_video.original_sha256 if processed_video else None,
+                            "processed_sha256": processed_video.final_sha256 if processed_video else None,
+                            "original_size_bytes": (
+                                processed_video.original_size_bytes if processed_video else None
+                            ),
+                            "processed_size_bytes": processed_video.final_size_bytes if processed_video else None,
+                            "processing_ms": processed_video.ffmpeg_ms if processed_video else None,
+                            "total_ms": processed_video.total_ms if processed_video else None,
+                        },
+                    )
+                    self._logger.info(
+                        "video_processing_dry_run_completed",
+                        job_id=job.id,
+                        campaign_id=job.campaign_id,
+                        media_asset_id=job.media_asset_id,
+                        processing_uuid=processed_video.processing_uuid if processed_video else None,
+                        random_seed=processed_video.random_seed if processed_video else None,
+                        used_fallback=processed_video is None,
+                        original_sha256=processed_video.original_sha256 if processed_video else None,
+                        processed_sha256=processed_video.final_sha256 if processed_video else None,
+                        original_size_bytes=processed_video.original_size_bytes if processed_video else None,
+                        processed_size_bytes=processed_video.final_size_bytes if processed_video else None,
+                        total_ms=processed_video.total_ms if processed_video else None,
+                    )
+                    return "completed"
+
+                if processed_video:
+                    media_url, temporary_storage_path = await self._temporary_processed_media_url(
+                        job,
+                        processed_video,
+                        signed_url,
+                    )
+                    temporary_processing_uuid = processed_video.processing_uuid
+
+                container_timer = Timer()
+                self._logger.info(
+                    "container_create_started",
+                    job_id=job.id,
+                    campaign_id=job.campaign_id,
+                    meta_app_id=job.meta_app_id,
+                    instagram_user_id=job.instagram_user_id,
                     media_type=job.campaign_type,
                     mime_type=job.mime_type,
+                    video_processing_enabled=self._settings.enable_video_processing,
+                    video_processing_used=processed_video is not None and media_url != signed_url,
+                    media_url="[redacted]",
                 )
-                raise
+                try:
+                    container_id = await self._instagram.create_container(
+                        token,
+                        job.instagram_user_id,
+                        media_url,
+                        job.mime_type,
+                        job.campaign_type,
+                        job.caption,
+                    )
+                except InstagramError as error:
+                    self._log_instagram_stage_error(
+                        "container_create_failed",
+                        job,
+                        error,
+                        container_timer,
+                        media_type=job.campaign_type,
+                        mime_type=job.mime_type,
+                    )
+                    raise
+                self._logger.info(
+                    "container_created",
+                    job_id=job.id,
+                    campaign_id=job.campaign_id,
+                    meta_app_id=job.meta_app_id,
+                    instagram_user_id=job.instagram_user_id,
+                    provider_container_id=container_id,
+                    media_type=job.campaign_type,
+                    mime_type=job.mime_type,
+                    video_processing_used=processed_video is not None and media_url != signed_url,
+                    media_url="[redacted]",
+                    ms=container_timer.ms(),
+                )
+                await self._repository.patch_metadata(
+                    job.id,
+                    {
+                        "provider_container_id": container_id,
+                        "provider_status": "container_created",
+                        "provider_container_created_at": now_iso(),
+                    },
+                )
+
+            await self._poll_container(job, token, container_id)
+            await self._repository.patch_metadata(
+                job.id,
+                {
+                    "provider_container_id": container_id,
+                    "provider_status": "publishing",
+                    "provider_publish_started_at": now_iso(),
+                },
+            )
+
+            publish_timer = Timer()
             self._logger.info(
-                "container_created",
+                "media_publish_started",
                 job_id=job.id,
                 campaign_id=job.campaign_id,
                 meta_app_id=job.meta_app_id,
                 instagram_user_id=job.instagram_user_id,
                 provider_container_id=container_id,
-                media_type=job.campaign_type,
-                mime_type=job.mime_type,
-                media_url="[redacted]",
-                ms=container_timer.ms(),
             )
-            await self._repository.patch_metadata(
+            try:
+                media_id = await self._instagram.publish_container(
+                    token,
+                    job.instagram_user_id,
+                    container_id,
+                )
+            except InstagramError as error:
+                self._log_instagram_stage_error(
+                    "media_publish_failed",
+                    job,
+                    error,
+                    publish_timer,
+                    container_id=container_id,
+                )
+
+                if error.category in {"timeout", "temporary"}:
+                    await self._repository.mark_failed(
+                        job.id,
+                        "publish_result_unknown",
+                        "Resultado da chamada media_publish desconhecido; nao republicado para evitar duplicidade.",
+                        {
+                            "provider_container_id": container_id,
+                            "provider_status": "publish_result_unknown",
+                        },
+                    )
+                    return "failed"
+
+                raise
+
+            self._logger.info(
+                "media_publish_completed",
+                job_id=job.id,
+                campaign_id=job.campaign_id,
+                meta_app_id=job.meta_app_id,
+                instagram_user_id=job.instagram_user_id,
+                provider_container_id=container_id,
+                provider_media_id=media_id,
+                ms=publish_timer.ms(),
+            )
+            await self._repository.mark_completed(
                 job.id,
+                media_id,
                 {
                     "provider_container_id": container_id,
-                    "provider_status": "container_created",
-                    "provider_container_created_at": now_iso(),
+                    "provider_media_id": media_id,
+                    "provider_status": "completed",
                 },
             )
-
-        await self._poll_container(job, token, container_id)
-        await self._repository.patch_metadata(
-            job.id,
-            {
-                "provider_container_id": container_id,
-                "provider_status": "publishing",
-                "provider_publish_started_at": now_iso(),
-            },
-        )
-
-        publish_timer = Timer()
-        self._logger.info(
-            "media_publish_started",
-            job_id=job.id,
-            campaign_id=job.campaign_id,
-            meta_app_id=job.meta_app_id,
-            instagram_user_id=job.instagram_user_id,
-            provider_container_id=container_id,
-        )
-        try:
-            media_id = await self._instagram.publish_container(
-                token,
-                job.instagram_user_id,
-                container_id,
-            )
-        except InstagramError as error:
-            self._log_instagram_stage_error(
-                "media_publish_failed",
+            await self._repository.log_event(
                 job,
-                error,
-                publish_timer,
-                container_id=container_id,
+                "publisher.job.completed",
+                "success",
+                "Publicacao enviada ao Instagram.",
+                {
+                    "provider_media_id": media_id,
+                    "provider_container_id": container_id,
+                    "meta_app_id": job.meta_app_id,
+                },
             )
+            return "completed"
+        finally:
+            if temporary_storage_path:
+                await self._remove_temporary_storage(job, temporary_storage_path, temporary_processing_uuid)
+            await self._video_processor.cleanup(job.id, processed_video)
 
-            if error.category in {"timeout", "temporary"}:
-                await self._repository.mark_failed(
-                    job.id,
-                    "publish_result_unknown",
-                    "Resultado da chamada media_publish desconhecido; nao republicado para evitar duplicidade.",
-                    {
-                        "provider_container_id": container_id,
-                        "provider_status": "publish_result_unknown",
-                    },
-                )
-                return "failed"
+    async def _temporary_processed_media_url(
+        self,
+        job: JobContext,
+        processed_video: ProcessedVideo,
+        fallback_url: str,
+    ) -> tuple[str, str | None]:
+        timer = Timer()
+        try:
+            temporary_upload = await self._video_processor.upload_temporary(
+                job.storage_bucket,
+                processed_video.output_path,
+                job.mime_type,
+                self._settings.worker_id,
+                job.id,
+                processed_video.processing_uuid,
+            )
+            self._logger.info(
+                "video_temporary_upload_finished",
+                job_id=job.id,
+                campaign_id=job.campaign_id,
+                media_asset_id=job.media_asset_id,
+                storage_bucket=job.storage_bucket,
+                storage_path=temporary_upload.storage_path,
+                processing_uuid=processed_video.processing_uuid,
+                upload_ms=temporary_upload.upload_ms,
+                ms=timer.ms(),
+            )
+            return temporary_upload.signed_url, temporary_upload.storage_path
+        except Exception as error:
+            self._logger.error(
+                "processing_failed",
+                job_id=job.id,
+                campaign_id=job.campaign_id,
+                media_asset_id=job.media_asset_id,
+                stage="temporary_storage_upload",
+                processing_uuid=processed_video.processing_uuid,
+                error_category="upload_error",
+                error=str(error),
+                ms=timer.ms(),
+                exc_info=True,
+            )
+            return fallback_url, None
 
-            raise
-
-        self._logger.info(
-            "media_publish_completed",
-            job_id=job.id,
-            campaign_id=job.campaign_id,
-            meta_app_id=job.meta_app_id,
-            instagram_user_id=job.instagram_user_id,
-            provider_container_id=container_id,
-            provider_media_id=media_id,
-            ms=publish_timer.ms(),
-        )
-        await self._repository.mark_completed(
-            job.id,
-            media_id,
-            {
-                "provider_container_id": container_id,
-                "provider_media_id": media_id,
-                "provider_status": "completed",
-            },
-        )
-        await self._repository.log_event(
-            job,
-            "publisher.job.completed",
-            "success",
-            "Publicacao enviada ao Instagram.",
-            {
-                "provider_media_id": media_id,
-                "provider_container_id": container_id,
-                "meta_app_id": job.meta_app_id,
-            },
-        )
-        return "completed"
+    async def _remove_temporary_storage(
+        self,
+        job: JobContext,
+        storage_path: str,
+        processing_uuid: str | None,
+    ) -> None:
+        try:
+            await self._video_processor.remove_temporary_storage(
+                job.storage_bucket,
+                storage_path,
+                job.id,
+                processing_uuid,
+            )
+        except Exception as error:
+            self._logger.warning(
+                "temporary_file_remove_failed",
+                job_id=job.id,
+                campaign_id=job.campaign_id,
+                processing_uuid=processing_uuid,
+                storage_bucket=job.storage_bucket,
+                path=storage_path,
+                kind="temporary_storage_object",
+                error=str(error),
+            )
 
     async def _poll_container(self, job: JobContext, token: str, container_id: str) -> None:
         delay = self._settings.polling_initial_seconds

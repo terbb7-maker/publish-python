@@ -35,6 +35,35 @@ class Settings(BaseModel):
     retry_jitter_seconds: int = Field(default=30, ge=0, le=3600)
 
     media_signed_url_ttl_seconds: int = Field(default=3600, ge=60, le=86400)
+    enable_video_processing: bool = False
+    enable_video_variation: bool = True
+    enable_color_variation: bool = True
+    enable_audio_variation: bool = True
+    enable_crop: bool = True
+    enable_scale_variation: bool = True
+    enable_fps_variation: bool = True
+    enable_mp4_rebuild: bool = True
+    enable_device_profile: bool = True
+    enable_metadata_randomization: bool = True
+    enable_hash_logging: bool = True
+    enable_frame_hash: bool = False
+    video_variation_level: Literal["low", "medium"] = "low"
+    video_random_seed: int | None = None
+    video_processing_mode: Literal["light_randomization"] = "light_randomization"
+    video_randomize_metadata: bool = True
+    video_rebuild_container: bool = True
+    video_randomize_encoder: bool = True
+    video_randomize_audio: bool = True
+    video_randomize_timestamps: bool = True
+    video_randomize_uuid: bool = True
+    video_randomize_brands: bool = True
+    ffmpeg_path: str = "ffmpeg"
+    ffprobe_path: str = "ffprobe"
+    ffmpeg_timeout_seconds: float = Field(default=300.0, ge=0.001, le=7200)
+    temp_directory: str = "/tmp/terbb-python-publisher"
+    temp_file_max_age_minutes: int = Field(default=60, ge=5, le=10080)
+    processing_preset: Literal["fast", "balanced", "quality"] = "fast"
+    video_processing_dry_run: bool = False
     http_timeout_seconds: float = Field(default=30.0, ge=5.0, le=120.0)
     polling_initial_seconds: float = Field(default=2.0, ge=0.5, le=60.0)
     polling_max_seconds: float = Field(default=30.0, ge=1.0, le=300.0)
@@ -88,6 +117,58 @@ def get_settings() -> Settings:
         media_signed_url_ttl_seconds=int(
             os.getenv("PYTHON_PUBLISHER_MEDIA_SIGNED_URL_TTL_SECONDS", "3600")
         ),
+        enable_video_processing=os.getenv("ENABLE_VIDEO_PROCESSING", "false").lower()
+        in {"1", "true", "yes"},
+        enable_video_variation=os.getenv("ENABLE_VIDEO_VARIATION", "true").lower()
+        in {"1", "true", "yes"},
+        enable_color_variation=os.getenv("ENABLE_COLOR_VARIATION", "true").lower()
+        in {"1", "true", "yes"},
+        enable_audio_variation=os.getenv("ENABLE_AUDIO_VARIATION", "true").lower()
+        in {"1", "true", "yes"},
+        enable_crop=os.getenv("ENABLE_CROP", "true").lower() in {"1", "true", "yes"},
+        enable_scale_variation=os.getenv("ENABLE_SCALE_VARIATION", "true").lower()
+        in {"1", "true", "yes"},
+        enable_fps_variation=os.getenv("ENABLE_FPS_VARIATION", "true").lower()
+        in {"1", "true", "yes"},
+        enable_mp4_rebuild=os.getenv("ENABLE_MP4_REBUILD", "true").lower()
+        in {"1", "true", "yes"},
+        enable_device_profile=os.getenv("ENABLE_DEVICE_PROFILE", "true").lower()
+        in {"1", "true", "yes"},
+        enable_metadata_randomization=os.getenv("ENABLE_METADATA_RANDOMIZATION", "true").lower()
+        in {"1", "true", "yes"},
+        enable_hash_logging=os.getenv("ENABLE_HASH_LOGGING", "true").lower()
+        in {"1", "true", "yes"},
+        enable_frame_hash=os.getenv("ENABLE_FRAME_HASH", "false").lower()
+        in {"1", "true", "yes"},
+        video_variation_level=os.getenv("VIDEO_VARIATION_LEVEL", "low"),
+        video_random_seed=(
+            int(os.environ["VIDEO_RANDOM_SEED"])
+            if os.getenv("VIDEO_RANDOM_SEED")
+            else None
+        ),
+        video_processing_mode=os.getenv("VIDEO_PROCESSING_MODE", "light_randomization"),
+        video_randomize_metadata=os.getenv("VIDEO_RANDOMIZE_METADATA", "true").lower()
+        in {"1", "true", "yes"},
+        video_rebuild_container=os.getenv("VIDEO_REBUILD_CONTAINER", "true").lower()
+        in {"1", "true", "yes"},
+        video_randomize_encoder=os.getenv("VIDEO_RANDOMIZE_ENCODER", "true").lower()
+        in {"1", "true", "yes"},
+        video_randomize_audio=os.getenv("VIDEO_RANDOMIZE_AUDIO", "true").lower()
+        in {"1", "true", "yes"},
+        video_randomize_timestamps=os.getenv("VIDEO_RANDOMIZE_TIMESTAMPS", "true").lower()
+        in {"1", "true", "yes"},
+        video_randomize_uuid=os.getenv("VIDEO_RANDOMIZE_UUID", "true").lower()
+        in {"1", "true", "yes"},
+        video_randomize_brands=os.getenv("VIDEO_RANDOMIZE_BRANDS", "true").lower()
+        in {"1", "true", "yes"},
+        ffmpeg_path=os.getenv("FFMPEG_PATH", "ffmpeg"),
+        ffprobe_path=os.getenv("FFPROBE_PATH", "ffprobe"),
+        ffmpeg_timeout_seconds=float(os.getenv("FFMPEG_TIMEOUT_SECONDS", "300")),
+        temp_directory=os.getenv("TEMP_DIRECTORY", "/tmp/terbb-python-publisher"),
+        temp_file_max_age_minutes=int(os.getenv("TEMP_FILE_MAX_AGE_MINUTES", "60")),
+        processing_preset=os.getenv("PROCESSING_PRESET", "fast"),
+        video_processing_dry_run=os.getenv("VIDEO_PROCESSING_DRY_RUN", "false").lower()
+        in {"1", "true", "yes"},
         http_timeout_seconds=float(os.getenv("PYTHON_PUBLISHER_HTTP_TIMEOUT_SECONDS", "30")),
         polling_initial_seconds=float(os.getenv("PYTHON_PUBLISHER_POLLING_INITIAL_SECONDS", "2")),
         polling_max_seconds=float(os.getenv("PYTHON_PUBLISHER_POLLING_MAX_SECONDS", "30")),
