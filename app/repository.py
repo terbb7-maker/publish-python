@@ -143,8 +143,7 @@ select
   cj.attempt_count,
   cj.scheduled_for_utc,
   cj.metadata_safe,
-  c.name as campaign_name,
-  c.description as campaign_description,
+  c.caption as campaign_caption,
   c.campaign_type,
   c.owner_user_id,
   c.workspace_id,
@@ -216,7 +215,7 @@ class Repository:
         metadata = data.get("metadata_safe") or {}
         if isinstance(metadata, str):
             metadata = json.loads(metadata)
-        caption = str(data["campaign_description"] or data["campaign_name"] or "")
+        caption = str(data["campaign_caption"] or "")
 
         return JobContext(
             id=str(data["id"]),

@@ -61,6 +61,10 @@ Scheduler
       7. gravar logs
 ```
 
+O contexto de publicacao usa `campaigns.caption` como unica legenda enviada para
+a Meta. `campaigns.name` e `campaigns.description` sao campos internos do
+painel e nunca devem ser usados como fallback de caption.
+
 ## Processamento de Video
 
 Quando `ENABLE_VIDEO_PROCESSING=true`, antes de criar o container na Meta o
