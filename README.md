@@ -65,6 +65,10 @@ O contexto de publicacao usa `campaigns.caption` como unica legenda enviada para
 a Meta. `campaigns.name` e `campaigns.description` sao campos internos do
 painel e nunca devem ser usados como fallback de caption.
 
+A criacao do container envia os campos em `multipart/form-data`, preservando a
+legenda diretamente em UTF-8. Diagnosticos registram somente comprimentos e
+SHA-256, sem expor o texto da legenda.
+
 ## Processamento de Video
 
 Quando `ENABLE_VIDEO_PROCESSING=true`, antes de criar o container na Meta o

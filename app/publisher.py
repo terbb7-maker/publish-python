@@ -6,6 +6,7 @@ from datetime import UTC, datetime, timedelta
 
 from cryptography.hazmat.primitives.ciphers.aead import AESGCM
 
+from app.caption import caption_diagnostics
 from app.config import Settings
 from app.instagram import FAILED_STATUSES, READY_STATUSES, InstagramClient, InstagramError
 from app.logger import get_logger
@@ -193,7 +194,14 @@ class Publisher:
                     )
                     temporary_processing_uuid = processed_video.processing_uuid
 
+                cover_url = await self._prepare_cover_url(job)
                 container_timer = Timer()
+                self._logger.info(
+                    "caption_python_ready",
+                    job_id=job.id,
+                    campaign_id=job.campaign_id,
+                    caption_python=caption_diagnostics(job.caption),
+                )
                 self._logger.info(
                     "container_create_started",
                     job_id=job.id,
@@ -205,6 +213,7 @@ class Publisher:
                     video_processing_enabled=self._settings.enable_video_processing,
                     video_processing_used=processed_video is not None and media_url != signed_url,
                     media_url="[redacted]",
+                    custom_thumbnail=bool(cover_url),
                 )
                 try:
                     container_id = await self._instagram.create_container(
@@ -214,8 +223,21 @@ class Publisher:
                         job.mime_type,
                         job.campaign_type,
                         job.caption,
+                        cover_url,
                     )
                 except InstagramError as error:
+                    if cover_url:
+                        self._logger.warning(
+                            "thumbnail_publish_failed",
+                            job_id=job.id,
+                            campaign_id=job.campaign_id,
+                            cover_media_asset_id=job.cover_media_asset_id,
+                            http_status=error.http_status,
+                            code=error.code,
+                            message=error.message,
+                            details=error.details,
+                            ms=container_timer.ms(),
+                        )
                     self._log_instagram_stage_error(
                         "container_create_failed",
                         job,
@@ -238,12 +260,23 @@ class Publisher:
                     media_url="[redacted]",
                     ms=container_timer.ms(),
                 )
+                if cover_url:
+                    self._logger.info(
+                        "thumbnail_publish_success",
+                        job_id=job.id,
+                        campaign_id=job.campaign_id,
+                        cover_media_asset_id=job.cover_media_asset_id,
+                        provider_container_id=container_id,
+                        ms=container_timer.ms(),
+                    )
                 await self._repository.patch_metadata(
                     job.id,
                     {
                         "provider_container_id": container_id,
                         "provider_status": "container_created",
                         "provider_container_created_at": now_iso(),
+                        "custom_thumbnail_used": bool(cover_url),
+                        "cover_media_asset_id": job.cover_media_asset_id if cover_url else None,
                     },
                 )
 
@@ -330,6 +363,79 @@ class Publisher:
             if temporary_storage_path:
                 await self._remove_temporary_storage(job, temporary_storage_path, temporary_processing_uuid)
             await self._video_processor.cleanup(job.id, processed_video)
+
+    async def _prepare_cover_url(self, job: JobContext) -> str | None:
+        if job.campaign_type != "reel":
+            return None
+
+        if not job.cover_media_asset_id:
+            self._logger.info(
+                "thumbnail_not_found",
+                job_id=job.id,
+                campaign_id=job.campaign_id,
+                reason="job_has_no_cover_media_asset",
+            )
+            return None
+
+        self._logger.info(
+            "thumbnail_detected",
+            job_id=job.id,
+            campaign_id=job.campaign_id,
+            cover_media_asset_id=job.cover_media_asset_id,
+            mime_type=job.cover_mime_type,
+        )
+
+        if (
+            job.cover_mime_type != "image/jpeg"
+            or job.cover_media_status != "ready"
+            or job.cover_media_deleted_at is not None
+            or not job.cover_storage_path
+        ):
+            self._logger.warning(
+                "thumbnail_not_found",
+                job_id=job.id,
+                campaign_id=job.campaign_id,
+                cover_media_asset_id=job.cover_media_asset_id,
+                reason="cover_asset_unavailable",
+                mime_type=job.cover_mime_type,
+                media_status=job.cover_media_status,
+                deleted=job.cover_media_deleted_at is not None,
+            )
+            return None
+
+        timer = Timer()
+        self._logger.info(
+            "thumbnail_upload_started",
+            job_id=job.id,
+            campaign_id=job.campaign_id,
+            cover_media_asset_id=job.cover_media_asset_id,
+            transport="meta_cover_url",
+        )
+        try:
+            cover_url = await self._repository.signed_cover_url(job)
+        except Exception as error:
+            self._logger.warning(
+                "thumbnail_not_found",
+                job_id=job.id,
+                campaign_id=job.campaign_id,
+                cover_media_asset_id=job.cover_media_asset_id,
+                reason="signed_url_failed",
+                error=str(error),
+                ms=timer.ms(),
+                exc_info=True,
+            )
+            return None
+
+        self._logger.info(
+            "thumbnail_upload_finished",
+            job_id=job.id,
+            campaign_id=job.campaign_id,
+            cover_media_asset_id=job.cover_media_asset_id,
+            transport="meta_cover_url",
+            cover_url="[redacted]",
+            ms=timer.ms(),
+        )
+        return cover_url
 
     async def _temporary_processed_media_url(
         self,

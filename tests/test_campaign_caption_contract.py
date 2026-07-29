@@ -90,6 +90,16 @@ class CampaignCaptionContractTest(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(context.caption, "")
 
+    async def test_context_preserves_unicode_caption_byte_for_byte(self) -> None:
+        caption = "Olá 👩🏽‍💻 🇧🇷 你好\n#lançamento @terbb"
+        settings = SimpleNamespace(worker_id="test-worker")
+        repository = Repository(FakeDatabase(context_row(caption)), settings)
+
+        context = await repository.get_context("11111111-1111-1111-1111-111111111111")
+
+        self.assertEqual(context.caption, caption)
+        self.assertEqual(context.caption.encode("utf-8"), caption.encode("utf-8"))
+
 
 if __name__ == "__main__":
     unittest.main()

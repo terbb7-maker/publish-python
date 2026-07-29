@@ -4,9 +4,10 @@ from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import Any
 
+from app.caption import caption_diagnostics
 from app.config import Settings
 from app.database import Database
-from app.logger import redact
+from app.logger import get_logger, redact
 
 
 ACTIVE_STATUSES = ("scheduled", "running")
@@ -31,6 +32,7 @@ class JobContext:
     campaign_account_id: str
     social_account_id: str
     media_asset_id: str
+    cover_media_asset_id: str | None
     status: str
     attempt_count: int
     scheduled_for_utc: datetime
@@ -41,6 +43,11 @@ class JobContext:
     mime_type: str
     media_status: str
     media_deleted_at: datetime | None
+    cover_storage_bucket: str | None
+    cover_storage_path: str | None
+    cover_mime_type: str | None
+    cover_media_status: str | None
+    cover_media_deleted_at: datetime | None
     instagram_user_id: str
     connected_account_id: str
     meta_app_id: str | None
@@ -139,6 +146,7 @@ select
   cj.campaign_account_id,
   cj.social_account_id,
   cj.media_asset_id,
+  cj.cover_media_asset_id,
   cj.status,
   cj.attempt_count,
   cj.scheduled_for_utc,
@@ -152,6 +160,11 @@ select
   ma.mime_type,
   ma.status as media_status,
   ma.deleted_at as media_deleted_at,
+  cover.storage_bucket as cover_storage_bucket,
+  cover.storage_path as cover_storage_path,
+  cover.mime_type as cover_mime_type,
+  cover.status as cover_media_status,
+  cover.deleted_at as cover_media_deleted_at,
   sa.external_account_id as instagram_user_id,
   sa.status as social_account_status,
   cauth.id as connected_account_id,
@@ -166,6 +179,7 @@ from public.campaign_jobs cj
 join public.campaigns c on c.id = cj.campaign_id
 join public.campaign_accounts ca on ca.id = cj.campaign_account_id
 join public.media_assets ma on ma.id = cj.media_asset_id
+left join public.media_assets cover on cover.id = cj.cover_media_asset_id
 join public.social_accounts sa on sa.id = cj.social_account_id
 join public.connected_accounts cauth on cauth.id = sa.connected_account_id
 where cj.id = $1::uuid
@@ -182,6 +196,7 @@ class Repository:
     def __init__(self, database: Database, settings: Settings) -> None:
         self._database = database
         self._settings = settings
+        self._logger = get_logger("repository")
 
     async def claim_due_jobs(self, limit: int) -> list[ClaimedJob]:
         async with self._database.acquire() as connection:
@@ -216,6 +231,12 @@ class Repository:
         if isinstance(metadata, str):
             metadata = json.loads(metadata)
         caption = str(data["campaign_caption"] or "")
+        self._logger.info(
+            "caption_database_loaded",
+            job_id=job_id,
+            campaign_id=str(data["campaign_id"]),
+            caption_database=caption_diagnostics(caption),
+        )
 
         return JobContext(
             id=str(data["id"]),
@@ -223,6 +244,9 @@ class Repository:
             campaign_account_id=str(data["campaign_account_id"]),
             social_account_id=str(data["social_account_id"]),
             media_asset_id=str(data["media_asset_id"]),
+            cover_media_asset_id=(
+                str(data["cover_media_asset_id"]) if data.get("cover_media_asset_id") else None
+            ),
             status=str(data["status"]),
             attempt_count=int(data["attempt_count"]),
             scheduled_for_utc=data["scheduled_for_utc"],
@@ -233,6 +257,19 @@ class Repository:
             mime_type=str(data["mime_type"]),
             media_status=str(data["media_status"]),
             media_deleted_at=data["media_deleted_at"],
+            cover_storage_bucket=(
+                str(data["cover_storage_bucket"]) if data.get("cover_storage_bucket") else None
+            ),
+            cover_storage_path=(
+                str(data["cover_storage_path"]) if data.get("cover_storage_path") else None
+            ),
+            cover_mime_type=(
+                str(data["cover_mime_type"]) if data.get("cover_mime_type") else None
+            ),
+            cover_media_status=(
+                str(data["cover_media_status"]) if data.get("cover_media_status") else None
+            ),
+            cover_media_deleted_at=data.get("cover_media_deleted_at"),
             instagram_user_id=str(data["instagram_user_id"]),
             connected_account_id=str(data["connected_account_id"]),
             meta_app_id=str(data["meta_app_id"]) if data["meta_app_id"] else None,
@@ -534,6 +571,34 @@ class Repository:
             signed_url = getattr(response, "signed_url", None) or getattr(response, "signedURL", None)
         if not signed_url:
             raise RuntimeError("Could not create signed media URL.")
+        return str(signed_url)
+
+    async def signed_cover_url(self, job: JobContext) -> str:
+        if not self._database.supabase:
+            raise RuntimeError("Supabase storage client is not connected.")
+        if not job.cover_storage_bucket or not job.cover_storage_path:
+            raise RuntimeError("Reel cover storage object is not available.")
+
+        response = await asyncio.to_thread(
+            lambda: self._database.supabase.storage.from_(
+                job.cover_storage_bucket
+            ).create_signed_url(
+                job.cover_storage_path,
+                self._settings.media_signed_url_ttl_seconds,
+            )
+        )
+        if isinstance(response, dict):
+            signed_url = (
+                response.get("signedURL")
+                or response.get("signedUrl")
+                or response.get("signed_url")
+            )
+        else:
+            signed_url = getattr(response, "signed_url", None) or getattr(
+                response, "signedURL", None
+            )
+        if not signed_url:
+            raise RuntimeError("Could not create signed Reel cover URL.")
         return str(signed_url)
 
     async def _finish(

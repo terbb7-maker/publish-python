@@ -5,6 +5,7 @@ from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 
 import httpx
 
+from app.caption import caption_diagnostics
 from app.config import Settings
 from app.logger import get_logger
 
@@ -61,6 +62,7 @@ class InstagramClient:
         mime_type: str,
         campaign_type: str,
         caption: str,
+        cover_url: str | None = None,
     ) -> str:
         payload: dict[str, Any] = {
             "caption": caption,
@@ -71,6 +73,8 @@ class InstagramClient:
             payload["image_url"] = media_url
         else:
             payload["video_url"] = media_url
+        if campaign_type == "reel" and cover_url:
+            payload["cover_url"] = cover_url
 
         response = await self._request("POST", f"/{instagram_user_id}/media", data=payload)
         container_id = response.get("id")
@@ -115,6 +119,8 @@ class InstagramClient:
         data: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         url = f"{self._base_url}{path}"
+        caption = str(data["caption"]) if data and isinstance(data.get("caption"), str) else None
+        multipart = multipart_fields(data) if data is not None else None
         self._logger.info(
             "instagram_http_request_started",
             method=method,
@@ -122,13 +128,15 @@ class InstagramClient:
             path=path,
             params=sanitize_mapping(params),
             body=sanitize_mapping(data),
+            content_type="multipart/form-data" if multipart is not None else None,
+            caption_request=caption_diagnostics(caption) if caption is not None else None,
         )
         try:
             response = await self._client.request(
                 method,
                 url,
                 params=params,
-                data=data,
+                files=multipart,
             )
         except httpx.TimeoutException as error:
             raise InstagramError(
@@ -149,8 +157,14 @@ class InstagramClient:
             ) from error
 
         payload = parse_json(response)
+        request_content = response.request.content
+        caption_utf8_preserved = (
+            caption.encode("utf-8", errors="strict") in request_content
+            if caption is not None
+            else None
+        )
         if response.is_error or payload.get("error"):
-            self._log_meta_raw_response(method, path, response, payload)
+            self._log_meta_raw_response(method, path, response, payload, caption)
             raise map_instagram_error(response.status_code, payload)
         self._logger.info(
             "instagram_http_response_succeeded",
@@ -160,6 +174,15 @@ class InstagramClient:
             http_status=response.status_code,
             headers=relevant_response_headers(response.headers),
             payload=sanitize_mapping(payload),
+            request_content_type=response.request.headers.get("content-type"),
+            caption_request=caption_diagnostics(caption) if caption is not None else None,
+            caption_utf8_preserved=caption_utf8_preserved,
+            caption_response={
+                "echoed_by_meta": False,
+                "reason": "container_response_does_not_include_caption",
+            }
+            if caption is not None
+            else None,
         )
         return payload
 
@@ -169,6 +192,7 @@ class InstagramClient:
         path: str,
         response: httpx.Response,
         payload: dict[str, Any],
+        caption: str | None,
     ) -> None:
         payload_safe = sanitize_mapping(payload)
         raw_response_block = (
@@ -186,6 +210,19 @@ class InstagramClient:
             headers=relevant_response_headers(response.headers),
             payload=payload_safe,
             raw_response_block=raw_response_block,
+            request_content_type=response.request.headers.get("content-type"),
+            caption_request=caption_diagnostics(caption) if caption is not None else None,
+            caption_utf8_preserved=(
+                caption.encode("utf-8", errors="strict") in response.request.content
+                if caption is not None
+                else None
+            ),
+            caption_response={
+                "echoed_by_meta": False,
+                "reason": "meta_error_response_does_not_echo_caption",
+            }
+            if caption is not None
+            else None,
         )
 
 
@@ -215,10 +252,30 @@ def sanitize_mapping(value: Any) -> Any:
         return [sanitize_mapping(item) for item in value]
     if isinstance(value, dict):
         return {
-            key: "[redacted]" if key.lower() in SENSITIVE_KEYS else sanitize_mapping(item)
+            key: (
+                "[redacted]"
+                if key.lower() in SENSITIVE_KEYS
+                else caption_diagnostics(str(item))
+                if key.lower() == "caption" and item is not None
+                else sanitize_mapping(item)
+            )
             for key, item in value.items()
         }
     return value
+
+
+def multipart_fields(data: dict[str, Any]) -> list[tuple[str, tuple[None, str]]]:
+    return [
+        (key, (None, form_value(value)))
+        for key, value in data.items()
+        if value is not None
+    ]
+
+
+def form_value(value: Any) -> str:
+    if isinstance(value, bool):
+        return "true" if value else "false"
+    return str(value)
 
 
 def sanitize_url(value: str) -> str:
