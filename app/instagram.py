@@ -121,16 +121,20 @@ class InstagramClient:
         url = f"{self._base_url}{path}"
         caption = str(data["caption"]) if data and isinstance(data.get("caption"), str) else None
         multipart = multipart_fields(data) if data is not None else None
-        self._logger.info(
-            "instagram_http_request_started",
-            method=method,
-            url=sanitize_url(url),
-            path=path,
-            params=sanitize_mapping(params),
-            body=sanitize_mapping(data),
-            content_type="multipart/form-data" if multipart is not None else None,
-            caption_request=caption_diagnostics(caption) if caption is not None else None,
-        )
+        caption_utf8_preserved = caption_matches_original_payload(data, caption)
+        try:
+            self._logger.info(
+                "instagram_http_request_started",
+                method=method,
+                url=sanitize_url(url),
+                path=path,
+                params=sanitize_mapping(params),
+                body=sanitize_mapping(data),
+                content_type="multipart/form-data" if multipart is not None else None,
+                caption_request=caption_diagnostics(caption) if caption is not None else None,
+            )
+        except Exception:
+            pass
         try:
             response = await self._client.request(
                 method,
@@ -157,33 +161,37 @@ class InstagramClient:
             ) from error
 
         payload = parse_json(response)
-        request_content = response.request.content
-        caption_utf8_preserved = (
-            caption.encode("utf-8", errors="strict") in request_content
-            if caption is not None
-            else None
-        )
         if response.is_error or payload.get("error"):
-            self._log_meta_raw_response(method, path, response, payload, caption)
+            self._log_meta_raw_response(
+                method,
+                path,
+                response,
+                payload,
+                caption,
+                caption_utf8_preserved,
+            )
             raise map_instagram_error(response.status_code, payload)
-        self._logger.info(
-            "instagram_http_response_succeeded",
-            method=method,
-            path=path,
-            url=sanitize_url(str(response.url)),
-            http_status=response.status_code,
-            headers=relevant_response_headers(response.headers),
-            payload=sanitize_mapping(payload),
-            request_content_type=response.request.headers.get("content-type"),
-            caption_request=caption_diagnostics(caption) if caption is not None else None,
-            caption_utf8_preserved=caption_utf8_preserved,
-            caption_response={
-                "echoed_by_meta": False,
-                "reason": "container_response_does_not_include_caption",
-            }
-            if caption is not None
-            else None,
-        )
+        try:
+            self._logger.info(
+                "instagram_http_response_succeeded",
+                method=method,
+                path=path,
+                url=sanitize_url(str(response.url)),
+                http_status=response.status_code,
+                headers=relevant_response_headers(response.headers),
+                payload=sanitize_mapping(payload),
+                request_content_type=response.request.headers.get("content-type"),
+                caption_request=caption_diagnostics(caption) if caption is not None else None,
+                caption_utf8_preserved=caption_utf8_preserved,
+                caption_response={
+                    "echoed_by_meta": False,
+                    "reason": "container_response_does_not_include_caption",
+                }
+                if caption is not None
+                else None,
+            )
+        except Exception:
+            pass
         return payload
 
     def _log_meta_raw_response(
@@ -193,37 +201,37 @@ class InstagramClient:
         response: httpx.Response,
         payload: dict[str, Any],
         caption: str | None,
+        caption_utf8_preserved: bool | None,
     ) -> None:
-        payload_safe = sanitize_mapping(payload)
-        raw_response_block = (
-            "================ META RAW RESPONSE ================\n"
-            f"HTTP STATUS: {response.status_code}\n"
-            f"{json.dumps(payload_safe, ensure_ascii=False, default=str, indent=2)}\n"
-            "=================================================="
-        )
-        self._logger.error(
-            "meta_raw_response",
-            method=method,
-            path=path,
-            url=sanitize_url(str(response.url)),
-            http_status=response.status_code,
-            headers=relevant_response_headers(response.headers),
-            payload=payload_safe,
-            raw_response_block=raw_response_block,
-            request_content_type=response.request.headers.get("content-type"),
-            caption_request=caption_diagnostics(caption) if caption is not None else None,
-            caption_utf8_preserved=(
-                caption.encode("utf-8", errors="strict") in response.request.content
+        try:
+            payload_safe = sanitize_mapping(payload)
+            raw_response_block = (
+                "================ META RAW RESPONSE ================\n"
+                f"HTTP STATUS: {response.status_code}\n"
+                f"{json.dumps(payload_safe, ensure_ascii=False, default=str, indent=2)}\n"
+                "=================================================="
+            )
+            self._logger.error(
+                "meta_raw_response",
+                method=method,
+                path=path,
+                url=sanitize_url(str(response.url)),
+                http_status=response.status_code,
+                headers=relevant_response_headers(response.headers),
+                payload=payload_safe,
+                raw_response_block=raw_response_block,
+                request_content_type=response.request.headers.get("content-type"),
+                caption_request=caption_diagnostics(caption) if caption is not None else None,
+                caption_utf8_preserved=caption_utf8_preserved,
+                caption_response={
+                    "echoed_by_meta": False,
+                    "reason": "meta_error_response_does_not_echo_caption",
+                }
                 if caption is not None
-                else None
-            ),
-            caption_response={
-                "echoed_by_meta": False,
-                "reason": "meta_error_response_does_not_echo_caption",
-            }
-            if caption is not None
-            else None,
-        )
+                else None,
+            )
+        except Exception:
+            pass
 
 
 def parse_json(response: httpx.Response) -> dict[str, Any]:
@@ -276,6 +284,22 @@ def form_value(value: Any) -> str:
     if isinstance(value, bool):
         return "true" if value else "false"
     return str(value)
+
+
+def caption_matches_original_payload(
+    data: dict[str, Any] | None,
+    caption: str | None,
+) -> bool | None:
+    if caption is None:
+        return None
+
+    try:
+        original = data.get("caption") if data is not None else None
+        return isinstance(original, str) and form_value(original).encode(
+            "utf-8", errors="strict"
+        ) == caption.encode("utf-8", errors="strict")
+    except (AttributeError, TypeError, UnicodeError):
+        return False
 
 
 def sanitize_url(value: str) -> str:

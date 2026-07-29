@@ -47,6 +47,65 @@ class UnicodeCaptionTransportTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn(UNICODE_CAPTION.encode("utf-8"), content)
         self.assertNotIn(b"%F0%9F", content)
 
+    async def test_unread_streaming_requests_and_logger_failures_do_not_interrupt_publish_flow(
+        self,
+    ) -> None:
+        class UnreadStream(httpx.AsyncByteStream):
+            async def __aiter__(self):
+                yield b"streaming-body"
+
+        class StubClient:
+            def __init__(self):
+                self.calls: list[tuple[str, str]] = []
+
+            async def request(self, method, url, params=None, files=None):
+                self.calls.append((method, url))
+                request = httpx.Request(method, url, stream=UnreadStream())
+                if url.endswith("/media_publish"):
+                    payload = {"id": "media-1"}
+                elif url.endswith("/media"):
+                    payload = {"id": "container-1"}
+                else:
+                    payload = {"status_code": "FINISHED"}
+                return httpx.Response(200, json=payload, request=request)
+
+        class FailingLogger:
+            def info(self, event, **context):
+                raise RuntimeError("logger unavailable")
+
+            def error(self, event, **context):
+                raise RuntimeError("logger unavailable")
+
+        client = object.__new__(InstagramClient)
+        client._settings = SimpleNamespace(retry_base_seconds=1)
+        client._base_url = "https://graph.instagram.com/v23.0"
+        client._logger = FailingLogger()
+        stub_client = StubClient()
+        client._client = stub_client
+
+        container_id = await client.create_container(
+            access_token="secret-token",
+            instagram_user_id="instagram-user",
+            media_url="https://storage.example/video.mp4",
+            mime_type="video/mp4",
+            campaign_type="reel",
+            caption=UNICODE_CAPTION,
+        )
+        status = await client.get_container_status("secret-token", container_id)
+        media_id = await client.publish_container("secret-token", "instagram-user", container_id)
+
+        self.assertEqual(container_id, "container-1")
+        self.assertEqual(status, "FINISHED")
+        self.assertEqual(media_id, "media-1")
+        self.assertEqual(
+            stub_client.calls,
+            [
+                ("POST", "https://graph.instagram.com/v23.0/instagram-user/media"),
+                ("GET", "https://graph.instagram.com/v23.0/container-1"),
+                ("POST", "https://graph.instagram.com/v23.0/instagram-user/media_publish"),
+            ],
+        )
+
     def test_diagnostics_are_stable_without_exposing_caption(self) -> None:
         first = caption_diagnostics(UNICODE_CAPTION)
         second = caption_diagnostics(UNICODE_CAPTION)
