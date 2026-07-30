@@ -1,5 +1,6 @@
 import unittest
 from types import SimpleNamespace
+from urllib.parse import parse_qs
 
 import httpx
 
@@ -12,7 +13,7 @@ UNICODE_CAPTION = "Olá 👩🏽‍💻 🇧🇷 你好\n#lançamento @terbb"
 
 
 class UnicodeCaptionTransportTests(unittest.IsolatedAsyncioTestCase):
-    async def test_request_uses_multipart_with_exact_utf8_caption_bytes(self) -> None:
+    async def test_request_uses_urlencoded_form_with_exact_unicode_caption(self) -> None:
         captured: dict[str, object] = {}
 
         async def handler(request: httpx.Request) -> httpx.Response:
@@ -43,9 +44,16 @@ class UnicodeCaptionTransportTests(unittest.IsolatedAsyncioTestCase):
         content = captured["content"]
         self.assertEqual(response, {"id": "container-1"})
         self.assertIsInstance(content, bytes)
-        self.assertTrue(str(captured["content_type"]).startswith("multipart/form-data; boundary="))
-        self.assertIn(UNICODE_CAPTION.encode("utf-8"), content)
-        self.assertNotIn(b"%F0%9F", content)
+        self.assertEqual(
+            captured["content_type"],
+            "application/x-www-form-urlencoded",
+        )
+        decoded = parse_qs(content.decode("ascii"), keep_blank_values=True)
+        self.assertEqual(decoded["caption"], [UNICODE_CAPTION])
+        self.assertEqual(
+            decoded["caption"][0].encode("utf-8"),
+            UNICODE_CAPTION.encode("utf-8"),
+        )
 
     async def test_unread_streaming_requests_and_logger_failures_do_not_interrupt_publish_flow(
         self,
@@ -58,7 +66,7 @@ class UnicodeCaptionTransportTests(unittest.IsolatedAsyncioTestCase):
             def __init__(self):
                 self.calls: list[tuple[str, str]] = []
 
-            async def request(self, method, url, params=None, files=None):
+            async def request(self, method, url, params=None, data=None):
                 self.calls.append((method, url))
                 request = httpx.Request(method, url, stream=UnreadStream())
                 if url.endswith("/media_publish"):

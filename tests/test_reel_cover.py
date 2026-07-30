@@ -27,6 +27,7 @@ class ReelCoverPayloadTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result, "container-1")
         self.assertEqual(captured["method"], "POST")
         self.assertEqual(captured["path"], "/instagram-user/media")
+        self.assertEqual(captured["data"]["caption"], "Legenda")  # type: ignore[index]
         self.assertEqual(captured["data"]["cover_url"], "https://storage.example/cover.jpg")  # type: ignore[index]
 
     async def test_reel_container_omits_cover_when_not_configured(self) -> None:

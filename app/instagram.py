@@ -120,7 +120,6 @@ class InstagramClient:
     ) -> dict[str, Any]:
         url = f"{self._base_url}{path}"
         caption = str(data["caption"]) if data and isinstance(data.get("caption"), str) else None
-        multipart = multipart_fields(data) if data is not None else None
         caption_utf8_preserved = caption_matches_original_payload(data, caption)
         try:
             self._logger.info(
@@ -130,7 +129,7 @@ class InstagramClient:
                 path=path,
                 params=sanitize_mapping(params),
                 body=sanitize_mapping(data),
-                content_type="multipart/form-data" if multipart is not None else None,
+                content_type="application/x-www-form-urlencoded" if data is not None else None,
                 caption_request=caption_diagnostics(caption) if caption is not None else None,
             )
         except Exception:
@@ -140,7 +139,7 @@ class InstagramClient:
                 method,
                 url,
                 params=params,
-                files=multipart,
+                data=data,
             )
         except httpx.TimeoutException as error:
             raise InstagramError(
@@ -270,14 +269,6 @@ def sanitize_mapping(value: Any) -> Any:
             for key, item in value.items()
         }
     return value
-
-
-def multipart_fields(data: dict[str, Any]) -> list[tuple[str, tuple[None, str]]]:
-    return [
-        (key, (None, form_value(value)))
-        for key, value in data.items()
-        if value is not None
-    ]
 
 
 def form_value(value: Any) -> str:
