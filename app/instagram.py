@@ -76,7 +76,7 @@ class InstagramClient:
         if campaign_type == "reel" and cover_url:
             payload["cover_url"] = cover_url
 
-        response = await self._request("POST", f"/{instagram_user_id}/media", data=payload)
+        response = await self._request("POST", f"/{instagram_user_id}/media", params=payload)
         container_id = response.get("id")
         if not container_id:
             raise InstagramError(
@@ -119,8 +119,20 @@ class InstagramClient:
         data: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         url = f"{self._base_url}{path}"
-        caption = str(data["caption"]) if data and isinstance(data.get("caption"), str) else None
-        caption_utf8_preserved = caption_matches_original_payload(data, caption)
+        caption_source = params if params and isinstance(params.get("caption"), str) else data
+        caption = (
+            str(caption_source["caption"])
+            if caption_source and isinstance(caption_source.get("caption"), str)
+            else None
+        )
+        caption_utf8_preserved = caption_matches_original_payload(caption_source, caption)
+        caption_transport = (
+            "query"
+            if params and isinstance(params.get("caption"), str)
+            else "form"
+            if data and isinstance(data.get("caption"), str)
+            else None
+        )
         try:
             self._logger.info(
                 "instagram_http_request_started",
@@ -131,6 +143,7 @@ class InstagramClient:
                 body=sanitize_mapping(data),
                 content_type="application/x-www-form-urlencoded" if data is not None else None,
                 caption_request=caption_diagnostics(caption) if caption is not None else None,
+                caption_transport=caption_transport,
             )
         except Exception:
             pass
@@ -182,6 +195,7 @@ class InstagramClient:
                 request_content_type=response.request.headers.get("content-type"),
                 caption_request=caption_diagnostics(caption) if caption is not None else None,
                 caption_utf8_preserved=caption_utf8_preserved,
+                caption_transport=caption_transport,
                 caption_response={
                     "echoed_by_meta": False,
                     "reason": "container_response_does_not_include_caption",
@@ -297,7 +311,14 @@ def sanitize_url(value: str) -> str:
     parsed = urlsplit(value)
     query = urlencode(
         [
-            (key, "[redacted]" if key.lower() in SENSITIVE_KEYS else item)
+            (
+                key,
+                "[redacted]"
+                if key.lower() in SENSITIVE_KEYS
+                else "[caption-redacted]"
+                if key.lower() == "caption"
+                else item,
+            )
             for key, item in parse_qsl(parsed.query, keep_blank_values=True)
         ]
     )

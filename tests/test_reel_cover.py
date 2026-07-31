@@ -27,15 +27,16 @@ class ReelCoverPayloadTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result, "container-1")
         self.assertEqual(captured["method"], "POST")
         self.assertEqual(captured["path"], "/instagram-user/media")
-        self.assertEqual(captured["data"]["caption"], "Legenda")  # type: ignore[index]
-        self.assertEqual(captured["data"]["cover_url"], "https://storage.example/cover.jpg")  # type: ignore[index]
+        self.assertEqual(captured["params"]["caption"], "Legenda")  # type: ignore[index]
+        self.assertEqual(captured["params"]["cover_url"], "https://storage.example/cover.jpg")  # type: ignore[index]
+        self.assertIsNone(captured["data"])
 
     async def test_reel_container_omits_cover_when_not_configured(self) -> None:
         client = object.__new__(InstagramClient)
         captured: dict[str, object] = {}
 
         async def request(method: str, path: str, params=None, data=None):
-            captured.update({"data": data})
+            captured.update({"params": params, "data": data})
             return {"id": "container-2"}
 
         client._request = request  # type: ignore[method-assign]
@@ -49,14 +50,15 @@ class ReelCoverPayloadTests(unittest.IsolatedAsyncioTestCase):
             "",
         )
 
-        self.assertNotIn("cover_url", captured["data"])  # type: ignore[operator]
+        self.assertNotIn("cover_url", captured["params"])  # type: ignore[operator]
+        self.assertIsNone(captured["data"])
 
     async def test_non_reel_never_sends_cover_url(self) -> None:
         client = object.__new__(InstagramClient)
         captured: dict[str, object] = {}
 
         async def request(method: str, path: str, params=None, data=None):
-            captured.update({"data": data})
+            captured.update({"params": params, "data": data})
             return {"id": "container-3"}
 
         client._request = request  # type: ignore[method-assign]
@@ -71,7 +73,8 @@ class ReelCoverPayloadTests(unittest.IsolatedAsyncioTestCase):
             "https://storage.example/cover.jpg",
         )
 
-        self.assertNotIn("cover_url", captured["data"])  # type: ignore[operator]
+        self.assertNotIn("cover_url", captured["params"])  # type: ignore[operator]
+        self.assertIsNone(captured["data"])
 
 
 if __name__ == "__main__":

@@ -13,12 +13,13 @@ UNICODE_CAPTION = "Olá 👩🏽‍💻 🇧🇷 你好\n#lançamento @terbb"
 
 
 class UnicodeCaptionTransportTests(unittest.IsolatedAsyncioTestCase):
-    async def test_request_uses_urlencoded_form_with_exact_unicode_caption(self) -> None:
+    async def test_create_container_sends_exact_unicode_caption_in_query(self) -> None:
         captured: dict[str, object] = {}
 
         async def handler(request: httpx.Request) -> httpx.Response:
             captured["content_type"] = request.headers.get("content-type")
             captured["content"] = request.content
+            captured["query"] = request.url.query
             return httpx.Response(200, json={"id": "container-1"})
 
         client = object.__new__(InstagramClient)
@@ -28,28 +29,28 @@ class UnicodeCaptionTransportTests(unittest.IsolatedAsyncioTestCase):
         client._client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
 
         try:
-            response = await client._request(
-                "POST",
-                "/instagram-user/media",
-                data={
-                    "caption": UNICODE_CAPTION,
-                    "media_type": "REELS",
-                    "video_url": "https://storage.example/video.mp4",
-                    "access_token": "secret-token",
-                },
+            response = await client.create_container(
+                access_token="secret-token",
+                instagram_user_id="instagram-user",
+                media_url="https://storage.example/video.mp4",
+                mime_type="video/mp4",
+                campaign_type="reel",
+                caption=UNICODE_CAPTION,
             )
         finally:
             await client._client.aclose()
 
         content = captured["content"]
-        self.assertEqual(response, {"id": "container-1"})
+        self.assertEqual(response, "container-1")
         self.assertIsInstance(content, bytes)
-        self.assertEqual(
-            captured["content_type"],
-            "application/x-www-form-urlencoded",
-        )
-        decoded = parse_qs(content.decode("ascii"), keep_blank_values=True)
+        self.assertEqual(content, b"")
+        self.assertIsNone(captured["content_type"])
+        query = captured["query"]
+        self.assertIsInstance(query, bytes)
+        decoded = parse_qs(query.decode("ascii"), keep_blank_values=True)
         self.assertEqual(decoded["caption"], [UNICODE_CAPTION])
+        self.assertEqual(decoded["media_type"], ["REELS"])
+        self.assertEqual(decoded["video_url"], ["https://storage.example/video.mp4"])
         self.assertEqual(
             decoded["caption"][0].encode("utf-8"),
             UNICODE_CAPTION.encode("utf-8"),
