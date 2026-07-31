@@ -72,7 +72,6 @@ class InstagramClient:
         payload: dict[str, Any] = {
             "caption": caption,
             "media_type": media_type(campaign_type, mime_type),
-            "access_token": access_token,
         }
         if mime_type.startswith("image/"):
             payload["image_url"] = media_url
@@ -81,7 +80,12 @@ class InstagramClient:
         if campaign_type == "reel" and cover_url:
             payload["cover_url"] = cover_url
 
-        response = await self._request("POST", f"/{instagram_user_id}/media", params=payload)
+        response = await self._request(
+            "POST",
+            f"/{instagram_user_id}/media",
+            json_body=payload,
+            headers={"Authorization": f"Bearer {access_token}"},
+        )
         container_id = response.get("id")
         if not container_id:
             raise InstagramError(
@@ -122,9 +126,17 @@ class InstagramClient:
         path: str,
         params: dict[str, Any] | None = None,
         data: dict[str, Any] | None = None,
+        json_body: dict[str, Any] | None = None,
+        headers: dict[str, str] | None = None,
     ) -> dict[str, Any]:
         url = f"{self._base_url}{path}"
-        caption_source = params if params and isinstance(params.get("caption"), str) else data
+        caption_source = (
+            json_body
+            if json_body and isinstance(json_body.get("caption"), str)
+            else params
+            if params and isinstance(params.get("caption"), str)
+            else data
+        )
         caption = (
             str(caption_source["caption"])
             if caption_source and isinstance(caption_source.get("caption"), str)
@@ -132,7 +144,9 @@ class InstagramClient:
         )
         caption_utf8_preserved = caption_matches_original_payload(caption_source, caption)
         caption_transport = (
-            "query"
+            "json"
+            if json_body and isinstance(json_body.get("caption"), str)
+            else "query"
             if params and isinstance(params.get("caption"), str)
             else "form"
             if data and isinstance(data.get("caption"), str)
@@ -145,8 +159,14 @@ class InstagramClient:
                 url=sanitize_url(url),
                 path=path,
                 params=sanitize_mapping(params),
-                body=sanitize_mapping(data),
-                content_type="application/x-www-form-urlencoded" if data is not None else None,
+                body=sanitize_mapping(json_body if json_body is not None else data),
+                content_type=(
+                    "application/json"
+                    if json_body is not None
+                    else "application/x-www-form-urlencoded"
+                    if data is not None
+                    else None
+                ),
                 caption_request=caption_diagnostics(caption) if caption is not None else None,
                 caption_transport=caption_transport,
             )
@@ -158,6 +178,8 @@ class InstagramClient:
                 url,
                 params=params,
                 data=data,
+                json=json_body,
+                headers=headers,
             )
         except httpx.TimeoutException as error:
             raise InstagramError(

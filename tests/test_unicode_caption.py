@@ -1,7 +1,7 @@
+import json
 import logging
 import unittest
 from types import SimpleNamespace
-from urllib.parse import parse_qs
 
 import httpx
 
@@ -14,11 +14,14 @@ UNICODE_CAPTION = "Olá 👩🏽‍💻 🇧🇷 你好\n#lançamento @terbb"
 
 
 class UnicodeCaptionTransportTests(unittest.IsolatedAsyncioTestCase):
-    async def test_create_container_sends_exact_unicode_caption_in_query(self) -> None:
+    async def test_create_container_sends_exact_unicode_caption_as_json_with_bearer_auth(
+        self,
+    ) -> None:
         captured: dict[str, object] = {}
 
         async def handler(request: httpx.Request) -> httpx.Response:
             captured["content_type"] = request.headers.get("content-type")
+            captured["authorization"] = request.headers.get("authorization")
             captured["content"] = request.content
             captured["query"] = request.url.query
             return httpx.Response(200, json={"id": "container-1"})
@@ -44,16 +47,16 @@ class UnicodeCaptionTransportTests(unittest.IsolatedAsyncioTestCase):
         content = captured["content"]
         self.assertEqual(response, "container-1")
         self.assertIsInstance(content, bytes)
-        self.assertEqual(content, b"")
-        self.assertIsNone(captured["content_type"])
-        query = captured["query"]
-        self.assertIsInstance(query, bytes)
-        decoded = parse_qs(query.decode("ascii"), keep_blank_values=True)
-        self.assertEqual(decoded["caption"], [UNICODE_CAPTION])
-        self.assertEqual(decoded["media_type"], ["REELS"])
-        self.assertEqual(decoded["video_url"], ["https://storage.example/video.mp4"])
+        self.assertEqual(captured["content_type"], "application/json")
+        self.assertEqual(captured["authorization"], "Bearer secret-token")
+        self.assertEqual(captured["query"], b"")
+        decoded = json.loads(content.decode("utf-8"))
+        self.assertEqual(decoded["caption"], UNICODE_CAPTION)
+        self.assertEqual(decoded["media_type"], "REELS")
+        self.assertEqual(decoded["video_url"], "https://storage.example/video.mp4")
+        self.assertNotIn("access_token", decoded)
         self.assertEqual(
-            decoded["caption"][0].encode("utf-8"),
+            decoded["caption"].encode("utf-8"),
             UNICODE_CAPTION.encode("utf-8"),
         )
 
@@ -68,7 +71,15 @@ class UnicodeCaptionTransportTests(unittest.IsolatedAsyncioTestCase):
             def __init__(self):
                 self.calls: list[tuple[str, str]] = []
 
-            async def request(self, method, url, params=None, data=None):
+            async def request(
+                self,
+                method,
+                url,
+                params=None,
+                data=None,
+                json=None,
+                headers=None,
+            ):
                 self.calls.append((method, url))
                 request = httpx.Request(method, url, stream=UnreadStream())
                 if url.endswith("/media_publish"):
