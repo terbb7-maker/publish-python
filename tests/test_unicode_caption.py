@@ -1,3 +1,4 @@
+import logging
 import unittest
 from types import SimpleNamespace
 from urllib.parse import parse_qs
@@ -6,7 +7,7 @@ import httpx
 
 from app.caption import caption_diagnostics
 from app.instagram import InstagramClient
-from app.logger import get_logger
+from app.logger import configure_logging, get_logger
 
 
 UNICODE_CAPTION = "Olá 👩🏽‍💻 🇧🇷 你好\n#lançamento @terbb"
@@ -122,6 +123,12 @@ class UnicodeCaptionTransportTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(first, second)
         self.assertEqual(first["caption_utf8_length"], len(UNICODE_CAPTION.encode("utf-8")))
         self.assertNotIn(UNICODE_CAPTION, first.values())
+
+    def test_http_client_loggers_never_emit_request_urls_at_info(self) -> None:
+        configure_logging("info")
+
+        self.assertGreaterEqual(logging.getLogger("httpx").level, logging.WARNING)
+        self.assertGreaterEqual(logging.getLogger("httpcore").level, logging.WARNING)
 
 
 if __name__ == "__main__":

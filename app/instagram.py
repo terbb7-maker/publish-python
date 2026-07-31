@@ -19,8 +19,13 @@ SENSITIVE_KEYS = {
     "client_secret",
     "code",
     "code_verifier",
+    "cover_url",
+    "image_url",
+    "media_url",
     "refresh_token",
+    "signed_url",
     "token",
+    "video_url",
 }
 
 
